@@ -16,29 +16,32 @@ pub struct PriceLevel {
 }
 
 impl PriceLevel {
-    pub fn new(_price: Price) -> Self {
-        unimplemented!()
+    pub fn new(price: Price) -> Self {
+        Self {
+            price,
+            orders: BTreeMap::<OrderId, Order>::new(),
+        }
     }
 
-    pub fn add(&mut self, _order: Order) {
-        unimplemented!()
+    pub fn add(&mut self, order: Order) {
+        self.orders.insert(order.id, order);
     }
 
     /// Removes the order with `id`. Returns it if found.
-    pub fn remove(&mut self, _id: OrderId) -> Option<Order> {
-        unimplemented!()
+    pub fn remove(&mut self, id: OrderId) -> Option<Order> {
+        self.orders.remove(&id)
     }
 
     pub fn total_quantity(&self) -> Quantity {
-        unimplemented!()
+        self.orders.values().map(|order| order.quantity).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        unimplemented!()
+        self.orders.is_empty()
     }
 
     pub fn order_count(&self) -> usize {
-        unimplemented!()
+        self.orders.len()
     }
 }
 

@@ -10,7 +10,7 @@ pub enum Side {
 }
 
 /// Naive order representation — no alignment padding yet.
-/// TODO: add #[repr(C)] + explicit 64-byte padding to prevent false sharing.
+#[repr(C, align(64))]
 #[derive(Debug, Clone)]
 pub struct Order {
     pub id: OrderId,
@@ -21,12 +21,24 @@ pub struct Order {
 }
 
 impl Order {
-    pub fn new(_id: OrderId, _price: Price, _quantity: Quantity, _side: Side, _timestamp: Timestamp) -> Self {
-        unimplemented!()
+    pub fn new(
+        id: OrderId,
+        price: Price,
+        quantity: Quantity,
+        side: Side,
+        timestamp: Timestamp,
+    ) -> Self {
+        Self {
+            id,
+            price,
+            quantity,
+            side,
+            timestamp,
+        }
     }
 
     pub fn is_filled(&self) -> bool {
-        unimplemented!()
+        self.quantity == 0
     }
 }
 
@@ -36,6 +48,20 @@ pub enum OrderResult {
     Added(OrderId),
     Cancelled(OrderId),
     NotFound(OrderId),
-    PartialFill { id: OrderId, filled: Quantity, remaining: Quantity },
+    PartialFill {
+        id: OrderId,
+        filled: Quantity,
+        remaining: Quantity,
+    },
     FullFill(OrderId),
+}
+
+#[cfg(test)]
+mod type_tests {
+    use super::*;
+
+    #[test]
+    fn order_is_64_bytes() {
+        assert_eq!(size_of::<Order>(), 64);
+    }
 }

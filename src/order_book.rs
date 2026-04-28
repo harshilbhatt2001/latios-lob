@@ -10,6 +10,7 @@ use crate::types::{Order, OrderId, OrderResult, Price, Side};
 /// pointer-chases through multiple heap-allocated nodes.
 ///
 /// TODO: replace with sorted Vec<PriceLevel> + binary_search.
+#[derive(Debug)]
 pub struct OrderBook {
     bids: HashMap<Price, PriceLevel>,
     asks: HashMap<Price, PriceLevel>,
@@ -17,64 +18,123 @@ pub struct OrderBook {
 
 impl OrderBook {
     pub fn new() -> Self {
-        unimplemented!()
+        OrderBook {
+            bids: HashMap::<Price, PriceLevel>::new(),
+            asks: HashMap::<Price, PriceLevel>::new(),
+        }
     }
 
     /// Insert a new resting order. Returns Added or an error variant.
-    pub fn add_order(&mut self, _order: Order) -> OrderResult {
-        unimplemented!()
+    pub fn add_order(&mut self, order: Order) -> OrderResult {
+        let id = order.id;
+        let book = match order.side {
+            Side::Bid => &mut self.bids,
+            Side::Ask => &mut self.asks,
+        };
+
+        book.entry(order.price)
+            .or_insert_with(|| PriceLevel::new(order.price))
+            .add(order);
+
+        OrderResult::Added(id)
     }
 
     /// Remove a resting order by id. Returns Cancelled or NotFound.
-    pub fn cancel_order(&mut self, _id: OrderId) -> OrderResult {
-        unimplemented!()
+    pub fn cancel_order(&mut self, id: OrderId) -> OrderResult {
+        let bid_price = {
+            let mut found = None;
+            for (&p, level) in &mut self.bids {
+                if level.remove(id).is_some() {
+                    found = Some(p);
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(p) = bid_price {
+            if self.bids[&p].is_empty() { self.bids.remove(&p); }
+            return OrderResult::Cancelled(id);
+        }
+
+        let ask_price = {
+            let mut found = None;
+            for (&p, level) in &mut self.asks {
+                if level.remove(id).is_some() {
+                    found = Some(p);
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(p) = ask_price {
+            if self.asks[&p].is_empty() { self.asks.remove(&p); }
+            return OrderResult::Cancelled(id);
+        }
+
+        OrderResult::NotFound(id)
     }
 
-    /// O(1) — best bid is the highest bid price level.
+    /// O(n) over price levels — scans all HashMap keys to find max.
+    /// TODO: O(1) once replaced with sorted Vec (best bid = last element).
     pub fn best_bid(&self) -> Option<Price> {
-        unimplemented!()
+        if self.bids.is_empty() {
+            return Option::None;
+        }
+
+        self.bids.keys().max().copied()
     }
 
-    /// O(1) — best ask is the lowest ask price level.
+    /// O(n) over price levels — scans all HashMap keys to find min.
+    /// TODO: O(1) once replaced with sorted Vec (best ask = first element).
     pub fn best_ask(&self) -> Option<Price> {
-        unimplemented!()
+        if self.asks.is_empty() {
+            return Option::None;
+        }
+
+        self.asks.keys().min().copied()
     }
 
     /// Mid-price, or None if either side is empty.
     pub fn mid_price(&self) -> Option<Price> {
-        unimplemented!()
+        match (self.best_bid(), self.best_ask()) {
+            (Some(bid), Some(ask)) => Some((bid + ask) / 2),
+            _ => None,
+        }
     }
 
     /// Spread in fixed-point units, or None if either side is empty.
     pub fn spread(&self) -> Option<Price> {
-        unimplemented!()
+        Some(self.best_ask()? - self.best_bid()?)
     }
 
     pub fn bid_depth(&self) -> usize {
-        unimplemented!()
+        self.bids.len()
     }
 
     pub fn ask_depth(&self) -> usize {
-        unimplemented!()
+        self.asks.len()
     }
 
     // --- private helpers ---------------------------------------------------
 
-    fn find_or_insert_level(_levels: &mut Vec<PriceLevel>, _price: Price) -> &mut PriceLevel {
+    /// HashMap lookup for the given side and price.
+    fn _level_for(&self, _side: Side, _price: Price) -> Option<&PriceLevel> {
         unimplemented!()
     }
 
-    fn remove_empty_levels(_levels: &mut Vec<PriceLevel>) {
+    fn _level_for_mut(&mut self, _side: Side, _price: Price) -> Option<&mut PriceLevel> {
         unimplemented!()
     }
 
-    /// Returns the side-appropriate Vec and a reference into it for `price`,
-    /// located via binary_search.
-    fn level_for(&self, _side: Side, _price: Price) -> Option<&PriceLevel> {
+    // --- Vec optimisation stubs --------------------------------------------
+
+    /// TODO: replace HashMap entry() calls with this once migrated to Vec<PriceLevel>.
+    fn _find_or_insert_level(_levels: &mut Vec<PriceLevel>, _price: Price) -> &mut PriceLevel {
         unimplemented!()
     }
 
-    fn level_for_mut(&mut self, _side: Side, _price: Price) -> Option<&mut PriceLevel> {
+    /// TODO: call after cancels to keep Vec compact once migrated.
+    fn _remove_empty_levels(_levels: &mut Vec<PriceLevel>) {
         unimplemented!()
     }
 }
@@ -88,14 +148,14 @@ impl Default for OrderBook {
 #[cfg(test)]
 mod book_invariants {
     use super::*;
-    use crate::types::{OrderResult, Side};
+    use crate::types::{Order, OrderResult, Side};
 
     fn bid(id: OrderId, price: Price) -> Order {
-        Order { id, price, quantity: 10, side: Side::Bid, timestamp: id }
+        Order::new(id, price, 10, Side::Bid, id)
     }
 
     fn ask(id: OrderId, price: Price) -> Order {
-        Order { id, price, quantity: 10, side: Side::Ask, timestamp: id }
+        Order::new(id, price, 10, Side::Ask, id)
     }
 
     // --- empty book ----------------------------------------------------------
