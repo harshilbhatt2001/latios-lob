@@ -7,7 +7,7 @@ use crate::types::{Order, OrderId, OrderResult, Price, Side};
 pub struct OrderBook {
     bids: Vec<PriceLevel>,
     asks: Vec<PriceLevel>,
-    order_metadata: HashMap<OrderId, (Price, Side)>,
+    order_metadata: HashMap<OrderId, (Price, Side, usize)>,
 }
 
 impl OrderBook {
@@ -15,7 +15,7 @@ impl OrderBook {
         OrderBook {
             bids: Vec::<PriceLevel>::new(),
             asks: Vec::<PriceLevel>::new(),
-            order_metadata: HashMap::<OrderId, (Price, Side)>::new(),
+            order_metadata: HashMap::<OrderId, (Price, Side, usize)>::new(),
         }
     }
 
@@ -23,39 +23,48 @@ impl OrderBook {
     pub fn add_order(&mut self, order: Order) -> OrderResult {
         let id = order.id;
         let price = order.price;
+        let side = order.side;
         let levels = match order.side {
             Side::Bid => &mut self.bids,
             Side::Ask => &mut self.asks,
         };
-        self.order_metadata.insert(id, (price, order.side));
 
-        match levels.binary_search_by_key(&price, |level| level.price) {
-            Ok(idx) => levels[idx].add(order),
+        let level_idx = match levels.binary_search_by_key(&price, |level| level.price) {
+            Ok(idx) => idx,
             Err(idx) => {
-                let mut new_level = PriceLevel::new(price);
-                new_level.add(order);
-                levels.insert(idx, new_level);
+                levels.insert(idx, PriceLevel::new(price));
+                idx
             }
-        }
+        };
+
+        let order_idx = levels[level_idx].add(order);
+        self.order_metadata.insert(id, (price, side, order_idx));
 
         OrderResult::Added(id)
     }
 
     /// Remove a resting order by id. Returns Cancelled or NotFound.
-    /// FIXME: this is a bottleneck in large books
     pub fn cancel_order(&mut self, id: OrderId) -> OrderResult {
-        if let Some((price, side)) = self.order_metadata.remove(&id) {
+        if let Some((price, side, vec_idx)) = self.order_metadata.remove(&id) {
             let levels = match side {
                 Side::Ask => &mut self.asks,
                 Side::Bid => &mut self.bids,
             };
 
             if let Ok(level_idx) = levels.binary_search_by_key(&price, |l| l.price) {
-                let level = &mut levels[level_idx];
-                level.remove(id);
-                if level.is_empty() {
-                    levels.remove(level_idx);
+                let (_, moved_id) = levels[level_idx].remove_at(vec_idx);
+
+                if let Some(m_id) = moved_id
+                    && let Some(meta) = self.order_metadata.get_mut(&m_id)
+                {
+                    meta.2 = vec_idx; // update index in metadata map
                 }
+
+                if levels[level_idx].is_empty() {
+                    levels.swap_remove(level_idx);
+                    levels.sort_unstable_by_key(|l| l.price);
+                }
+                return OrderResult::Cancelled(id);
             }
             OrderResult::Cancelled(id)
         } else {

@@ -16,19 +16,29 @@ impl PriceLevel {
         }
     }
 
-    pub fn add(&mut self, order: Order) {
+    pub fn add(&mut self, order: Order) -> usize {
+        let index = self.orders.len();
         self.total_volume += order.quantity;
         self.orders.push(order);
+        index
     }
 
     /// Removes the order with `id`. Returns it if found.
     pub fn remove(&mut self, id: OrderId) -> Option<Order> {
         if let Some(idx) = self.orders.iter().position(|order| order.id == id) {
             self.total_volume -= self.orders[idx].quantity;
-            Some(self.orders.remove(idx))
+            Some(self.orders.swap_remove(idx))
         } else {
             None
         }
+    }
+
+    pub fn remove_at(&mut self, idx: usize) -> (Order, Option<OrderId>) {
+        self.total_volume -= self.orders[idx].quantity;
+        let removed = self.orders.swap_remove(idx);
+
+        let moved_id = self.orders.get(idx).map(|o| o.id);
+        (removed, moved_id)
     }
 
     pub fn total_quantity(&self) -> Quantity {
