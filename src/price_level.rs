@@ -1,39 +1,38 @@
-use std::collections::BTreeMap;
-
 use crate::types::{Order, OrderId, Price, Quantity};
 
-/// A single price level — naive, intentionally cache-unfriendly.
-///
-/// BTreeMap<OrderId, Order> means every insertion/removal pointer-chases
-/// through heap-allocated tree nodes. Each node is likely on a separate
-/// cache line, so a lookup touches O(log n) cold lines.
-///
-/// TODO: replace with Vec<Order> backed by the arena allocator.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PriceLevel {
     pub price: Price,
-    orders: BTreeMap<OrderId, Order>,
+    orders: Vec<Order>,
+    total_volume: Quantity,
 }
 
 impl PriceLevel {
     pub fn new(price: Price) -> Self {
         Self {
             price,
-            orders: BTreeMap::<OrderId, Order>::new(),
+            orders: Vec::<Order>::new(),
+            total_volume: 0,
         }
     }
 
     pub fn add(&mut self, order: Order) {
-        self.orders.insert(order.id, order);
+        self.total_volume += order.quantity;
+        self.orders.push(order);
     }
 
     /// Removes the order with `id`. Returns it if found.
     pub fn remove(&mut self, id: OrderId) -> Option<Order> {
-        self.orders.remove(&id)
+        if let Some(idx) = self.orders.iter().position(|order| order.id == id) {
+            self.total_volume -= self.orders[idx].quantity;
+            Some(self.orders.remove(idx))
+        } else {
+            None
+        }
     }
 
     pub fn total_quantity(&self) -> Quantity {
-        self.orders.values().map(|order| order.quantity).sum()
+        self.total_volume
     }
 
     pub fn is_empty(&self) -> bool {

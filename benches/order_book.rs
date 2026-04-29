@@ -1,5 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use latios_lob::{Order, OrderId, OrderBook, Side};
+use criterion::{Criterion, criterion_group, criterion_main};
+use latios_lob::{Order, OrderBook, OrderId, Side};
+use std::hint::black_box;
 
 /// Mixed add/cancel workload: 1 000 orders across 10 price levels per side,
 /// ~33% cancel rate.  This is the baseline for the naive HashMap implementation
@@ -7,9 +8,9 @@ use latios_lob::{Order, OrderId, OrderBook, Side};
 fn bench_mixed_workload(c: &mut Criterion) {
     const N: u64 = 1_000;
     const LEVELS: u64 = 10;
-    const BID_BASE: u64 = 100_000_000; // $100.000000 in 6-decimal fixed-point
-    const ASK_BASE: u64 = 101_000_000; // $101.000000
-    const TICK: u64 = 100_000;         // $0.100000 per level
+    const BID_BASE: u64 = 100_000_000; // 100.000000 in 6-decimal fixed-point
+    const ASK_BASE: u64 = 101_000_000; // 101.000000
+    const TICK: u64 = 100_000; // 0.100000 per level
 
     // Pre-generate order data outside the hot loop so we only measure book ops.
     let orders: Vec<Order> = (0..N)

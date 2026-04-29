@@ -3,95 +3,82 @@ use std::collections::HashMap;
 use crate::price_level::PriceLevel;
 use crate::types::{Order, OrderId, OrderResult, Price, Side};
 
-/// Naive order book — intentionally cache-unfriendly.
-///
-/// HashMap<Price, PriceLevel> means every price lookup is a heap allocation
-/// + hash probe. Combined with PriceLevel's inner BTreeMap, every operation
-/// pointer-chases through multiple heap-allocated nodes.
-///
-/// TODO: replace with sorted Vec<PriceLevel> + binary_search.
 #[derive(Debug)]
 pub struct OrderBook {
-    bids: HashMap<Price, PriceLevel>,
-    asks: HashMap<Price, PriceLevel>,
+    bids: Vec<PriceLevel>,
+    asks: Vec<PriceLevel>,
+    order_metadata: HashMap<OrderId, (Price, Side)>,
 }
 
 impl OrderBook {
     pub fn new() -> Self {
         OrderBook {
-            bids: HashMap::<Price, PriceLevel>::new(),
-            asks: HashMap::<Price, PriceLevel>::new(),
+            bids: Vec::<PriceLevel>::new(),
+            asks: Vec::<PriceLevel>::new(),
+            order_metadata: HashMap::<OrderId, (Price, Side)>::new(),
         }
     }
 
     /// Insert a new resting order. Returns Added or an error variant.
     pub fn add_order(&mut self, order: Order) -> OrderResult {
         let id = order.id;
-        let book = match order.side {
+        let price = order.price;
+        let levels = match order.side {
             Side::Bid => &mut self.bids,
             Side::Ask => &mut self.asks,
         };
+        self.order_metadata.insert(id, (price, order.side));
 
-        book.entry(order.price)
-            .or_insert_with(|| PriceLevel::new(order.price))
-            .add(order);
+        match levels.binary_search_by_key(&price, |level| level.price) {
+            Ok(idx) => levels[idx].add(order),
+            Err(idx) => {
+                let mut new_level = PriceLevel::new(price);
+                new_level.add(order);
+                levels.insert(idx, new_level);
+            }
+        }
 
         OrderResult::Added(id)
     }
 
     /// Remove a resting order by id. Returns Cancelled or NotFound.
+    /// FIXME: this is a bottleneck in large books
     pub fn cancel_order(&mut self, id: OrderId) -> OrderResult {
-        let bid_price = {
-            let mut found = None;
-            for (&p, level) in &mut self.bids {
-                if level.remove(id).is_some() {
-                    found = Some(p);
-                    break;
+        if let Some((price, side)) = self.order_metadata.remove(&id) {
+            let levels = match side {
+                Side::Ask => &mut self.asks,
+                Side::Bid => &mut self.bids,
+            };
+
+            if let Ok(level_idx) = levels.binary_search_by_key(&price, |l| l.price) {
+                let level = &mut levels[level_idx];
+                level.remove(id);
+                if level.is_empty() {
+                    levels.remove(level_idx);
                 }
             }
-            found
-        };
-        if let Some(p) = bid_price {
-            if self.bids[&p].is_empty() { self.bids.remove(&p); }
-            return OrderResult::Cancelled(id);
+            OrderResult::Cancelled(id)
+        } else {
+            OrderResult::NotFound(id)
         }
-
-        let ask_price = {
-            let mut found = None;
-            for (&p, level) in &mut self.asks {
-                if level.remove(id).is_some() {
-                    found = Some(p);
-                    break;
-                }
-            }
-            found
-        };
-        if let Some(p) = ask_price {
-            if self.asks[&p].is_empty() { self.asks.remove(&p); }
-            return OrderResult::Cancelled(id);
-        }
-
-        OrderResult::NotFound(id)
     }
 
-    /// O(n) over price levels — scans all HashMap keys to find max.
-    /// TODO: O(1) once replaced with sorted Vec (best bid = last element).
+    ///  over price levels — scans to find max.
     pub fn best_bid(&self) -> Option<Price> {
         if self.bids.is_empty() {
             return Option::None;
         }
 
-        self.bids.keys().max().copied()
+        Some(self.bids.last().unwrap().price)
     }
 
-    /// O(n) over price levels — scans all HashMap keys to find min.
-    /// TODO: O(1) once replaced with sorted Vec (best ask = first element).
+    ///  over price levels — scans to find min.
     pub fn best_ask(&self) -> Option<Price> {
         if self.asks.is_empty() {
             return Option::None;
         }
 
-        self.asks.keys().min().copied()
+        Some(self.asks.first().unwrap().price)
     }
 
     /// Mid-price, or None if either side is empty.
@@ -113,29 +100,6 @@ impl OrderBook {
 
     pub fn ask_depth(&self) -> usize {
         self.asks.len()
-    }
-
-    // --- private helpers ---------------------------------------------------
-
-    /// HashMap lookup for the given side and price.
-    fn _level_for(&self, _side: Side, _price: Price) -> Option<&PriceLevel> {
-        unimplemented!()
-    }
-
-    fn _level_for_mut(&mut self, _side: Side, _price: Price) -> Option<&mut PriceLevel> {
-        unimplemented!()
-    }
-
-    // --- Vec optimisation stubs --------------------------------------------
-
-    /// TODO: replace HashMap entry() calls with this once migrated to Vec<PriceLevel>.
-    fn _find_or_insert_level(_levels: &mut Vec<PriceLevel>, _price: Price) -> &mut PriceLevel {
-        unimplemented!()
-    }
-
-    /// TODO: call after cancels to keep Vec compact once migrated.
-    fn _remove_empty_levels(_levels: &mut Vec<PriceLevel>) {
-        unimplemented!()
     }
 }
 
@@ -282,5 +246,145 @@ mod book_invariants {
         book.add_order(ask(1, 200));
         book.add_order(ask(2, 201));
         assert_eq!(book.ask_depth(), 2);
+    }
+}
+
+#[cfg(test)]
+mod edge_cases {
+    use super::*;
+    use crate::types::{Order, OrderResult, Side};
+
+    // Minimal LCG — no external deps needed.
+    fn next_rand(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state >> 33
+    }
+
+    // ── 1. Mass-cancel: 1 000 random orders, cancel every one → empty book ──
+
+    #[test]
+    fn mass_cancel_leaves_book_empty() {
+        let mut book = OrderBook::new();
+        let mut rng = 0xDEAD_BEEF_CAFE_u64;
+        const N: u64 = 1_000;
+
+        for id in 1..=N {
+            // Bids in [100,119], asks in [130,149] — book stays uncrossed by input.
+            let (price, side) = if next_rand(&mut rng) % 2 == 0 {
+                (100 + next_rand(&mut rng) % 20, Side::Bid)
+            } else {
+                (130 + next_rand(&mut rng) % 20, Side::Ask)
+            };
+            book.add_order(Order::new(id, price, 1, side, id));
+        }
+
+        for id in 1..=N {
+            book.cancel_order(id);
+        }
+
+        assert_eq!(book.bid_depth(), 0, "bid levels remain after mass cancel");
+        assert_eq!(book.ask_depth(), 0, "ask levels remain after mass cancel");
+        assert_eq!(book.best_bid(), None);
+        assert_eq!(book.best_ask(), None);
+        // Metadata map must also be drained — no ghost entries.
+        assert_eq!(
+            book.order_metadata.len(),
+            0,
+            "stale metadata after mass cancel"
+        );
+    }
+
+    // ── 2. Crossed-book invariant: best_bid < best_ask after every operation ──
+
+    #[test]
+    fn book_never_crosses_under_random_ops() {
+        let mut book = OrderBook::new();
+        let mut rng = 0xCAFE_BABE_1234_u64;
+        // live_ids tracks orders still in the book so we can cancel random ones.
+        let mut live_ids: Vec<OrderId> = Vec::new();
+        let mut next_id: OrderId = 1;
+
+        for _ in 0..3_000 {
+            match next_rand(&mut rng) % 3 {
+                0 => {
+                    // add bid: prices strictly below 150
+                    let price = 100 + next_rand(&mut rng) % 50;
+                    book.add_order(Order::new(next_id, price, 1, Side::Bid, next_id));
+                    live_ids.push(next_id);
+                    next_id += 1;
+                }
+                1 => {
+                    // add ask: prices strictly above 149
+                    let price = 150 + next_rand(&mut rng) % 50;
+                    book.add_order(Order::new(next_id, price, 1, Side::Ask, next_id));
+                    live_ids.push(next_id);
+                    next_id += 1;
+                }
+                _ => {
+                    // cancel a random live order
+                    if !live_ids.is_empty() {
+                        let idx = (next_rand(&mut rng) as usize) % live_ids.len();
+                        let id = live_ids.swap_remove(idx);
+                        book.cancel_order(id);
+                    }
+                }
+            }
+
+            if let (Some(bid), Some(ask)) = (book.best_bid(), book.best_ask()) {
+                assert!(
+                    bid < ask,
+                    "crossed book after {} ops: best_bid={bid} >= best_ask={ask}",
+                    next_id - 1
+                );
+            }
+        }
+    }
+
+    // ── 3. Cancelling a non-existent order_id returns NotFound, not a panic ──
+
+    #[test]
+    fn cancel_nonexistent_id_returns_not_found() {
+        let mut book = OrderBook::new();
+        assert_eq!(book.cancel_order(0), OrderResult::NotFound(0));
+        assert_eq!(book.cancel_order(9999), OrderResult::NotFound(9999));
+        assert_eq!(book.cancel_order(u64::MAX), OrderResult::NotFound(u64::MAX));
+    }
+
+    #[test]
+    fn cancel_already_cancelled_returns_not_found() {
+        // Cancelling an order a second time must not return Cancelled — the order
+        // no longer exists, so NotFound is the correct response.
+        // This also guards against a stale-metadata bug where order_metadata is
+        // never drained on cancel, causing a spurious Cancelled on a repeat call.
+        let mut book = OrderBook::new();
+        book.add_order(Order::new(1, 100, 10, Side::Bid, 1));
+        assert_eq!(book.cancel_order(1), OrderResult::Cancelled(1));
+        assert_eq!(
+            book.cancel_order(1),
+            OrderResult::NotFound(1),
+            "second cancel of the same id must be NotFound"
+        );
+    }
+
+    // ── 4. add_order with a duplicate order_id on the same level ─────────────
+    //
+    // Design decision: duplicate order_ids are *silently appended* to the same
+    // price level (no Err/rejection). Each add_order call returns Added(id).
+    // Callers are responsible for ensuring id uniqueness; the book does not
+    // deduplicate.  cancel_order will remove the first match by FIFO order.
+
+    #[test]
+    fn duplicate_order_id_appends_to_same_level() {
+        let mut book = OrderBook::new();
+        let r1 = book.add_order(Order::new(1, 100, 10, Side::Bid, 0));
+        let r2 = book.add_order(Order::new(1, 100, 20, Side::Bid, 1));
+
+        assert_eq!(r1, OrderResult::Added(1));
+        assert_eq!(r2, OrderResult::Added(1));
+        // Still one price level, not two.
+        assert_eq!(book.bid_depth(), 1);
+        assert_eq!(book.best_bid(), Some(100));
     }
 }
