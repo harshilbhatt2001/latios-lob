@@ -1,13 +1,45 @@
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 use crate::price_level::PriceLevel;
 use crate::types::{Order, OrderId, OrderResult, Price, Side};
+
+// Packs (price: u32, vec-index: u31, side: 1 bit) into 8 bytes.
+// bit 31 of idx_side = Side (0 = Bid, 1 = Ask); bits 0..30 = index.
+#[derive(Clone, Copy, Debug)]
+struct OrderMeta {
+    price: u32,
+    idx_side: u32,
+}
+
+impl OrderMeta {
+    #[inline(always)]
+    fn new(price: Price, idx: usize, side: Side) -> Self {
+        let side_bit = match side {
+            Side::Bid => 0u32,
+            Side::Ask => 1u32 << 31,
+        };
+        Self { price: price as u32, idx_side: idx as u32 | side_bit }
+    }
+
+    #[inline(always)]
+    fn price(self) -> Price { self.price as Price }
+    #[inline(always)]
+    fn idx(self) -> usize { (self.idx_side & 0x7FFF_FFFF) as usize }
+    #[inline(always)]
+    fn side(self) -> Side {
+        if self.idx_side >> 31 == 0 { Side::Bid } else { Side::Ask }
+    }
+    #[inline(always)]
+    fn set_idx(&mut self, idx: usize) {
+        self.idx_side = (self.idx_side & (1 << 31)) | idx as u32;
+    }
+}
 
 #[derive(Debug)]
 pub struct OrderBook {
     bids: Vec<PriceLevel>,
     asks: Vec<PriceLevel>,
-    order_metadata: HashMap<OrderId, (Price, Side, usize)>,
+    order_metadata: AHashMap<OrderId, OrderMeta>,
 }
 
 impl OrderBook {
@@ -15,7 +47,7 @@ impl OrderBook {
         OrderBook {
             bids: Vec::<PriceLevel>::new(),
             asks: Vec::<PriceLevel>::new(),
-            order_metadata: HashMap::<OrderId, (Price, Side, usize)>::new(),
+            order_metadata: AHashMap::new(),
         }
     }
 
@@ -38,31 +70,32 @@ impl OrderBook {
         };
 
         let order_idx = levels[level_idx].add(order);
-        self.order_metadata.insert(id, (price, side, order_idx));
+        self.order_metadata.insert(id, OrderMeta::new(price, order_idx, side));
 
         OrderResult::Added(id)
     }
 
     /// Remove a resting order by id. Returns Cancelled or NotFound.
     pub fn cancel_order(&mut self, id: OrderId) -> OrderResult {
-        if let Some((price, side, vec_idx)) = self.order_metadata.remove(&id) {
-            let levels = match side {
+        if let Some(meta) = self.order_metadata.remove(&id) {
+            let vec_idx = meta.idx();
+            let levels = match meta.side() {
                 Side::Ask => &mut self.asks,
                 Side::Bid => &mut self.bids,
             };
 
-            if let Ok(level_idx) = levels.binary_search_by_key(&price, |l| l.price) {
+            if let Ok(level_idx) = levels.binary_search_by_key(&meta.price(), |l| l.price) {
                 let (_, moved_id) = levels[level_idx].remove_at(vec_idx);
 
                 if let Some(m_id) = moved_id
-                    && let Some(meta) = self.order_metadata.get_mut(&m_id)
+                    && let Some(moved_meta) = self.order_metadata.get_mut(&m_id)
                 {
-                    meta.2 = vec_idx; // update index in metadata map
+                    moved_meta.set_idx(vec_idx);
                 }
 
                 if levels[level_idx].is_empty() {
                     levels.swap_remove(level_idx);
-                    levels.sort_unstable_by_key(|l| l.price);
+                    //levels.sort_unstable_by_key(|l| l.price);
                 }
                 return OrderResult::Cancelled(id);
             }

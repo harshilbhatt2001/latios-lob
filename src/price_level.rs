@@ -23,16 +23,6 @@ impl PriceLevel {
         index
     }
 
-    /// Removes the order with `id`. Returns it if found.
-    pub fn remove(&mut self, id: OrderId) -> Option<Order> {
-        if let Some(idx) = self.orders.iter().position(|order| order.id == id) {
-            self.total_volume -= self.orders[idx].quantity;
-            Some(self.orders.swap_remove(idx))
-        } else {
-            None
-        }
-    }
-
     pub fn remove_at(&mut self, idx: usize) -> (Order, Option<OrderId>) {
         self.total_volume -= self.orders[idx].quantity;
         let removed = self.orders.swap_remove(idx);
