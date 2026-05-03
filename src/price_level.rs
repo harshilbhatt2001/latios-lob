@@ -42,6 +42,20 @@ impl PriceLevel {
     pub fn order_count(&self) -> usize {
         self.orders.len()
     }
+
+    pub fn first(&mut self) -> &mut Order {
+        &mut self.orders[0]
+    }
+
+    /// Match `available` qty against the front order.
+    /// Returns `(filled, maker_id, maker_exhausted)`.
+    pub fn match_front(&mut self, available: Quantity) -> (Quantity, OrderId, bool) {
+        let front = &mut self.orders[0];
+        let qty = available.min(front.quantity);
+        front.quantity -= qty;
+        self.total_volume -= qty;
+        (qty, front.id, front.quantity == 0)
+    }
 }
 
 impl PartialEq for PriceLevel {

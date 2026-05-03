@@ -9,9 +9,8 @@ pub enum Side {
     Ask,
 }
 
-/// Naive order representation — no alignment padding yet.
 #[repr(C, align(64))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Order {
     pub id: OrderId,
     pub price: Price,
@@ -40,6 +39,14 @@ impl Order {
     pub fn is_filled(&self) -> bool {
         self.quantity == 0
     }
+}
+
+#[derive(Debug)]
+pub struct Trade {
+    pub price: Price,
+    pub quantity: Quantity,
+    pub maker_id: OrderId,
+    pub taker_id: OrderId,
 }
 
 /// Result of attempting to match or modify an order.

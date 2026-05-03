@@ -28,10 +28,10 @@ fn bench_mixed_workload(c: &mut Criterion) {
 
     c.bench_function("mixed_add_cancel_1k", |b| {
         b.iter_batched(
-            || OrderBook::new(),
+            OrderBook::new,
             |mut book| {
                 for order in &orders {
-                    black_box(book.add_order(order.clone()));
+                    black_box(book.add_order(*order));
                 }
                 for &id in &cancel_ids {
                     black_box(book.cancel_order(id));
@@ -53,10 +53,10 @@ fn bench_add_only(c: &mut Criterion) {
 
     c.bench_function("add_only_1k", |b| {
         b.iter_batched(
-            || OrderBook::new(),
+            OrderBook::new,
             |mut book| {
                 for order in &orders {
-                    black_box(book.add_order(order.clone()));
+                    black_box(book.add_order(*order));
                 }
             },
             BatchSize::SmallInput,
@@ -77,13 +77,47 @@ fn bench_cancel_only(c: &mut Criterion) {
             || {
                 let mut book = OrderBook::new();
                 for order in &orders {
-                    book.add_order(order.clone());
+                    book.add_order(*order);
                 }
                 book
             },
             |mut book| {
                 for &id in &cancel_ids {
                     black_box(book.cancel_order(id));
+                }
+            },
+            BatchSize::SmallInput,
+        )
+    });
+}
+
+/// match_order: book pre-populated with asks, timed phase fires crossing bids.
+/// Each taker bid is priced above all ask levels so it always hits the best ask.
+fn bench_match_order(c: &mut Criterion) {
+    const N: u64 = 1_000;
+    const LEVELS: u64 = 10;
+
+    let ask_orders: Vec<Order> = (0..N)
+        .map(|i| Order::new(i, ASK_BASE + (i % LEVELS) * TICK, 100, Side::Ask, i))
+        .collect();
+
+    // Takers priced above the highest ask level so they always cross.
+    let taker_bids: Vec<Order> = (0..N)
+        .map(|i| Order::new(N + i, ASK_BASE + LEVELS * TICK, 1, Side::Bid, i))
+        .collect();
+
+    c.bench_function("match_order_1k", |b| {
+        b.iter_batched(
+            || {
+                let mut book = OrderBook::new();
+                for order in &ask_orders {
+                    book.add_order(*order);
+                }
+                book
+            },
+            |mut book| {
+                for taker in &taker_bids {
+                    black_box(book.match_order(*taker));
                 }
             },
             BatchSize::SmallInput,
@@ -101,10 +135,10 @@ fn bench_add_depth_scaling(c: &mut Criterion) {
         let orders = make_orders(N, levels);
         group.bench_with_input(BenchmarkId::from_parameter(levels), &orders, |b, orders| {
             b.iter_batched(
-                || OrderBook::new(),
+                OrderBook::new,
                 |mut book| {
                     for order in orders {
-                        black_box(book.add_order(order.clone()));
+                        black_box(book.add_order(*order));
                     }
                 },
                 BatchSize::SmallInput,
@@ -115,7 +149,6 @@ fn bench_add_depth_scaling(c: &mut Criterion) {
 }
 
 /// best_bid / best_ask on a populated book — hot path for market data feeds.
-/// These are O(1) (Vec::last / Vec::first) but the cache state matters.
 fn bench_best_bid_ask(c: &mut Criterion) {
     const N: u64 = 1_000;
     const LEVELS: u64 = 10;
@@ -138,6 +171,7 @@ criterion_group!(
     bench_mixed_workload,
     bench_add_only,
     bench_cancel_only,
+    bench_match_order,
     bench_add_depth_scaling,
     bench_best_bid_ask,
 );

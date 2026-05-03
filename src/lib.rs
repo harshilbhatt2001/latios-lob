@@ -4,7 +4,7 @@ pub mod price_level;
 pub mod types;
 
 pub use order_book::OrderBook;
-pub use types::{Order, OrderId, OrderResult, Price, Quantity, Side, Timestamp};
+pub use types::{Order, OrderId, OrderResult, Price, Quantity, Side, Timestamp, Trade};
 
 use mimalloc::MiMalloc;
 

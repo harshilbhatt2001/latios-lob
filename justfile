@@ -13,3 +13,6 @@ test:
 bench:
     cargo bench --benches
 
+run *args:
+    cargo run --release -- {{args}}
+
